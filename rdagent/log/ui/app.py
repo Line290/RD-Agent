@@ -2,19 +2,15 @@ import argparse
 import re
 import textwrap
 from collections import defaultdict
-from datetime import datetime, timezone
+from collections.abc import Callable
 from importlib.resources import files as rfiles
 from pathlib import Path
-from typing import Callable, Type
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
-from streamlit import session_state as state
-from streamlit_theme import st_theme
-
 from rdagent.components.coder.factor_coder.evaluators import FactorSingleFeedback
 from rdagent.components.coder.factor_coder.factor import FactorFBWorkspace, FactorTask
 from rdagent.components.coder.model_coder.evaluators import ModelSingleFeedback
@@ -35,6 +31,8 @@ from rdagent.scenarios.qlib.experiment.model_experiment import (
     QlibModelScenario,
 )
 from rdagent.scenarios.qlib.experiment.quant_experiment import QlibQuantScenario
+from streamlit import session_state as state
+from streamlit_theme import st_theme
 
 st.set_page_config(layout="wide", page_title="RD-Agent", page_icon="🎓", initial_sidebar_state="expanded")
 
@@ -72,15 +70,28 @@ SIMILAR_SCENARIOS = (
 def filter_log_folders(main_log_path):
     """
     Filter and return the log folders relative to the main log path.
+    Only return folders that contain a scenario subfolder (valid run folders).
     """
-    folders = [folder.relative_to(main_log_path) for folder in main_log_path.iterdir() if folder.is_dir()]
-    folders = sorted(folders, key=lambda x: x.name)
+    folders = [
+        folder.relative_to(main_log_path)
+        for folder in main_log_path.iterdir()
+        if folder.is_dir() and (folder / "scenario").is_dir()
+    ]
+    folders = sorted(folders, key=lambda x: x.name, reverse=True)  # newest first
     return folders
 
 
 if "log_path" not in state:
     if main_log_path:
-        state.log_path = filter_log_folders(main_log_path)[0]
+        valid_folders = filter_log_folders(main_log_path)
+        if valid_folders:
+            state.log_path = valid_folders[0]  # newest run
+        elif (main_log_path / "scenario").is_dir():
+            # main_log_path itself is a run folder
+            state.log_path = Path()
+        else:
+            state.log_path = None
+            st.toast(":red[**Please Set Log Path!**]", icon="⚠️")
     else:
         state.log_path = None
         st.toast(":red[**Please Set Log Path!**]", icon="⚠️")
@@ -184,6 +195,7 @@ def get_msgs_until(end_func: Callable[[Message], bool] = lambda _: True):
                             state.alpha_baseline_metrics = sms
 
                         if state.lround == 1 and len(msg.content.based_experiments) > 0:
+                            sms_all = None
                             try:
                                 sms = msg.content.based_experiments[-1].result
                             except AttributeError:
@@ -200,31 +212,35 @@ def get_msgs_until(end_func: Callable[[Message], bool] = lambda _: True):
                                 ):
                                     sms_all = sms
                                     sms = sms.loc[QLIB_SELECTED_METRICS]
-                                sms.name = f"Baseline"
+                                sms.name = "Baseline"
                                 state.metric_series.append(sms)
-                                state.all_metric_series.append(sms_all)
+                                if sms_all is not None:
+                                    state.all_metric_series.append(sms_all)
 
                         # common metrics
                         try:
                             sms = msg.content.result
                         except AttributeError:
                             sms = msg.content.__dict__["result"]
-                        if isinstance(
-                            state.scenario,
-                            (
-                                QlibModelScenario,
-                                QlibFactorFromReportScenario,
-                                QlibFactorScenario,
-                                QlibQuantScenario,
-                            ),
-                        ):
-                            sms_all = sms
-                            sms = sms.loc[QLIB_SELECTED_METRICS]
+                        if sms is not None:
+                            if isinstance(
+                                state.scenario,
+                                (
+                                    QlibModelScenario,
+                                    QlibFactorFromReportScenario,
+                                    QlibFactorScenario,
+                                    QlibQuantScenario,
+                                ),
+                            ):
+                                sms_all = sms
+                                sms = sms.loc[QLIB_SELECTED_METRICS]
 
-                        sms.name = f"Round {state.lround}"
-                        sms_all.name = f"Round {state.lround}"
-                        state.metric_series.append(sms)
-                        state.all_metric_series.append(sms_all)
+                            sms.name = f"Round {state.lround}"
+                            if sms_all is not None:
+                                sms_all.name = f"Round {state.lround}"
+                            state.metric_series.append(sms)
+                            if sms_all is not None:
+                                state.all_metric_series.append(sms_all)
                     elif "hypothesis generation" in tags:
                         state.hypotheses[state.lround] = msg.content
                     elif "evolving code" in tags:
@@ -292,7 +308,7 @@ def refresh(same_trace: bool = False):
 def evolving_feedback_window(wsf: FactorSingleFeedback | ModelSingleFeedback):
     if isinstance(wsf, FactorSingleFeedback):
         ffc, efc, cfc, vfc = st.tabs(
-            ["**Final Feedback🏁**", "Execution Feedback🖥️", "Code Feedback📄", "Value Feedback🔢"]
+            ["**Final Feedback🏁**", "Execution Feedback🖥️", "Code Feedback📄", "Value Feedback🔢"],
         )
         with ffc:
             st.markdown(wsf.final_feedback)
@@ -310,7 +326,7 @@ def evolving_feedback_window(wsf: FactorSingleFeedback | ModelSingleFeedback):
                 "Code Feedback📄",
                 "Model Shape Feedback📐",
                 "Value Feedback🔢",
-            ]
+            ],
         )
         with ffc:
             st.markdown(wsf.final_feedback)
@@ -444,9 +460,7 @@ def summary_window():
                 display_hypotheses(state.hypotheses, state.h_decisions, show_true_only)
 
             with chart_c:
-                if isinstance(state.scenario, QlibFactorScenario) and state.alpha_baseline_metrics is not None:
-                    df = pd.DataFrame([state.alpha_baseline_metrics] + state.metric_series[1:])
-                elif isinstance(state.scenario, QlibQuantScenario) and state.alpha_baseline_metrics is not None:
+                if (isinstance(state.scenario, QlibFactorScenario) and state.alpha_baseline_metrics is not None) or (isinstance(state.scenario, QlibQuantScenario) and state.alpha_baseline_metrics is not None):
                     df = pd.DataFrame([state.alpha_baseline_metrics] + state.metric_series[1:])
                 else:
                     df = pd.DataFrame(state.metric_series)
@@ -631,7 +645,7 @@ def feedback_window():
                         st.write(fbr[0].content.experiment_workspace.workspace_path)
                         st.write(fbr[0].content.stdout)
                     except Exception as e:
-                        st.error(f"Error displaying workspace path: {str(e)}")
+                        st.error(f"Error displaying workspace path: {e!s}")
                 with st.expander("**Config⚙️**", expanded=True):
                     st.markdown(state.scenario.experiment_setting, unsafe_allow_html=True)
 
@@ -653,7 +667,7 @@ def feedback_window():
                 if fbe := state.msgs[round]["runner result"]:
                     submission_path = fbe[0].content.experiment_workspace.workspace_path / "submission.csv"
                     st.markdown(
-                        f":green[**Exp Workspace**]: {str(fbe[0].content.experiment_workspace.workspace_path.absolute())}"
+                        f":green[**Exp Workspace**]: {fbe[0].content.experiment_workspace.workspace_path.absolute()!s}",
                     )
                     try:
                         data = submission_path.read_bytes()
@@ -760,7 +774,13 @@ with st.sidebar:
                 st.text_input("log path", key="log_path", on_change=refresh, label_visibility="collapsed")
             else:
                 folders = filter_log_folders(main_log_path)
-                st.selectbox(f"**Select from `{main_log_path}`**", folders, key="log_path", on_change=refresh)
+                if folders:
+                    st.selectbox(f"**Select from `{main_log_path}`**", folders, key="log_path", on_change=refresh)
+                elif (main_log_path / "scenario").is_dir():
+                    # main_log_path itself is a run folder
+                    st.info(f"Using run folder: `{main_log_path}`")
+                else:
+                    st.warning("No valid run folders found.")
         else:
             st.text_input(":blue[**log path**]", key="log_path", on_change=refresh)
 
@@ -808,7 +828,7 @@ if debug:
                 f"**excluded types**: {state.excluded_types}\n\n"
                 f":blue[**message id**]: {sum(sum(len(tmsgs) for tmsgs in rmsgs.values()) for rmsgs in state.msgs.values())}\n\n"
                 f":blue[**round**]: {state.lround}\n\n"
-                f":blue[**evolving round**]: {state.erounds[state.lround]}\n\n"
+                f":blue[**evolving round**]: {state.erounds[state.lround]}\n\n",
             )
         with dcol2:
             if state.last_msg:
@@ -825,6 +845,10 @@ if debug:
 
 if state.log_path and state.fs is None:
     refresh()
+
+# Auto-load all remaining messages after refresh
+if state.log_path and state.fs is not None and state.lround == 0 and len(state.msgs) == 0:
+    get_msgs_until(lambda m: False)
 
 # Main Window
 header_c1, header_c3 = st.columns([1, 6], vertical_alignment="center")
@@ -979,7 +1003,7 @@ def analyze_task_completion():
                     "Passed (Final)": (
                         f"{final_passed}/{total_tasks} ({final_passed/total_tasks:.0%})" if total_tasks > 0 else "N/A"
                     ),
-                }
+                },
             )
 
         if total_tasks_across_loops > 0:
@@ -991,7 +1015,7 @@ def analyze_task_completion():
                     "Passed (Round 3)": f"**{total_passed_r3}/{total_tasks_across_loops} ({total_passed_r3/total_tasks_across_loops:.0%})**",
                     "Passed (Round 5)": f"**{total_passed_r5}/{total_tasks_across_loops} ({total_passed_r5/total_tasks_across_loops:.0%})**",
                     "Passed (Final)": f"**{total_passed_final}/{total_tasks_across_loops} ({total_passed_final/total_tasks_across_loops:.0%})**",
-                }
+                },
             )
 
         st.table(pd.DataFrame(summary_data))
@@ -1045,7 +1069,7 @@ def analyze_task_completion():
                                 "Evolving Round": e_round,
                                 "Tasks Passed": f"{round_data['count']}/{total_tasks} ({round_data['count']/total_tasks:.0%})",
                                 "Cumulative Passed": f"{round_data['cumulative_count']}/{total_tasks} ({round_data['cumulative_count']/total_tasks:.0%})",
-                            }
+                            },
                         )
                     else:
                         data.append({"Evolving Round": e_round, "Tasks Passed": "N/A", "Cumulative Passed": "N/A"})
@@ -1056,36 +1080,36 @@ def analyze_task_completion():
                 st.markdown("### Summary:")
                 if 1 in stats["rounds"]:
                     st.markdown(
-                        f"- After round 1: **{stats['rounds'][1]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][1]['cumulative_count']/total_tasks:.0%})"
+                        f"- After round 1: **{stats['rounds'][1]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][1]['cumulative_count']/total_tasks:.0%})",
                     )
 
                 if 3 in stats["rounds"]:
                     st.markdown(
-                        f"- After round 3: **{stats['rounds'][3]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][3]['cumulative_count']/total_tasks:.0%})"
+                        f"- After round 3: **{stats['rounds'][3]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][3]['cumulative_count']/total_tasks:.0%})",
                     )
                 elif stats["max_round"] >= 3:
                     max_round_below_3 = max([r for r in stats["rounds"].keys() if r <= 3])
                     st.markdown(
-                        f"- After round 3: **{stats['rounds'][max_round_below_3]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][max_round_below_3]['cumulative_count']/total_tasks:.0%})"
+                        f"- After round 3: **{stats['rounds'][max_round_below_3]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][max_round_below_3]['cumulative_count']/total_tasks:.0%})",
                     )
 
                 if 5 in stats["rounds"]:
                     st.markdown(
-                        f"- After round 5: **{stats['rounds'][5]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][5]['cumulative_count']/total_tasks:.0%})"
+                        f"- After round 5: **{stats['rounds'][5]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][5]['cumulative_count']/total_tasks:.0%})",
                     )
                 elif stats["max_round"] >= 5:
                     max_round_below_5 = max([r for r in stats["rounds"].keys() if r <= 5])
                     st.markdown(
-                        f"- After round 5: **{stats['rounds'][max_round_below_5]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][max_round_below_5]['cumulative_count']/total_tasks:.0%})"
+                        f"- After round 5: **{stats['rounds'][max_round_below_5]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][max_round_below_5]['cumulative_count']/total_tasks:.0%})",
                     )
 
                 if 10 in stats["rounds"]:
                     st.markdown(
-                        f"- After round 10: **{stats['rounds'][10]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][10]['cumulative_count']/total_tasks:.0%})"
+                        f"- After round 10: **{stats['rounds'][10]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][10]['cumulative_count']/total_tasks:.0%})",
                     )
                 elif stats["max_round"] >= 1:
                     st.markdown(
-                        f"- After final round ({stats['max_round']}): **{stats['rounds'][stats['max_round']]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][stats['max_round']]['cumulative_count']/total_tasks:.0%})"
+                        f"- After final round ({stats['max_round']}): **{stats['rounds'][stats['max_round']]['cumulative_count']}/{total_tasks}** tasks passed ({stats['rounds'][stats['max_round']]['cumulative_count']/total_tasks:.0%})",
                     )
     else:
         st.info("No task completion data available.")

@@ -1,24 +1,40 @@
 import random
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pandas as pd
 from jinja2 import Environment, StrictUndefined
-
 from rdagent.components.coder.factor_coder.config import FACTOR_COSTEER_SETTINGS
-from rdagent.utils.env import QTDockerEnv
+from rdagent.log import rdagent_logger as logger
+from rdagent.utils.env import QlibCondaConf, QlibCondaEnv
 
 
 def generate_data_folder_from_qlib():
     template_path = Path(__file__).parent / "factor_data_template"
-    qtde = QTDockerEnv()
+    qtde = QlibCondaEnv(conf=QlibCondaConf())
     qtde.prepare()
+
+    # Download qlib data if not exists
+    qlib_data_path = Path("~/.qlib/qlib_data/cn_data").expanduser()
+    if not qlib_data_path.exists():
+        logger.info("Downloading qlib cn_data...")
+        subprocess.check_call(
+            [
+                "conda", "run", "-n", qtde.conf.conda_env_name, "--no-capture-output",
+                "python", "-c",
+                "from qlib.tests.data import GetData; "
+                "GetData().qlib_data("
+                "target_dir='~/.qlib/qlib_data/cn_data', "
+                "region='cn', interval='1d', delete_old=True)",
+            ],
+        )
 
     # Run the Qlib backtest
     execute_log = qtde.check_output(
         local_path=str(template_path),
-        entry=f"python generate.py",
+        entry="python generate.py",
     )
 
     assert (Path(__file__).parent / "factor_data_template" / "daily_pv_all.h5").exists(), (
@@ -129,7 +145,7 @@ def get_file_desc(p: Path, variable_list=[]) -> str:
             content=df_info,
         )
 
-    elif p.name.endswith(".md"):
+    if p.name.endswith(".md"):
         with open(p) as f:
             content = f.read()
             return JJ_TPL.render(
