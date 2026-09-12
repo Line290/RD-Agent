@@ -1,10 +1,9 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import fire
-
 from rdagent.app.qlib_rd_loop.conf import FACTOR_FROM_REPORT_PROP_SETTING
 from rdagent.app.qlib_rd_loop.factor import FactorRDLoop
 from rdagent.components.document_reader.document_reader import (
@@ -12,7 +11,7 @@ from rdagent.components.document_reader.document_reader import (
     load_and_process_pdfs_by_langchain,
 )
 from rdagent.core.conf import RD_AGENT_SETTINGS
-from rdagent.core.proposal import Hypothesis, HypothesisFeedback
+from rdagent.core.proposal import Hypothesis
 from rdagent.log import rdagent_logger as logger
 from rdagent.oai.llm_utils import APIBackend
 from rdagent.scenarios.qlib.experiment.factor_experiment import QlibFactorExperiment
@@ -20,6 +19,7 @@ from rdagent.scenarios.qlib.factor_experiment_loader.pdf_loader import (
     FactorExperimentLoaderFromPDFfiles,
 )
 from rdagent.utils.agent.tpl import T
+from rdagent.utils.global_trace import append_to_global_trace, seed_trace_from_global
 from rdagent.utils.workflow import LoopMeta
 
 
@@ -36,14 +36,14 @@ def generate_hypothesis(factor_result: dict, report_content: str) -> str:
     """
     system_prompt = T(".prompts:hypothesis_generation.system").r()
     user_prompt = T(".prompts:hypothesis_generation.user").r(
-        factor_descriptions=json.dumps(factor_result), report_content=report_content
+        factor_descriptions=json.dumps(factor_result), report_content=report_content,
     )
 
     response = APIBackend().build_messages_and_create_chat_completion(
         user_prompt=user_prompt,
         system_prompt=system_prompt,
         json_mode=True,
-        json_target_type=Dict[str, str],
+        json_target_type=dict[str, str],
     )
 
     response_json = json.loads(response)
@@ -95,11 +95,11 @@ def extract_hypothesis_and_exp_from_reports(report_file_path: str) -> QlibFactor
 
 
 class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
-    def __init__(self, report_folder: str = None):
+    def __init__(self, report_folder: str = None, global_trace: str = None):
         super().__init__(PROP_SETTING=FACTOR_FROM_REPORT_PROP_SETTING)
         if report_folder is None:
             self.judge_pdf_data_items = json.load(
-                open(FACTOR_FROM_REPORT_PROP_SETTING.report_result_json_file_path, "r")
+                open(FACTOR_FROM_REPORT_PROP_SETTING.report_result_json_file_path),
             )
         else:
             self.judge_pdf_data_items = [i for i in Path(report_folder).rglob("*.pdf")]
@@ -108,6 +108,15 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         self.shift_report = (
             0  # some reports does not contain viable factor, so we ship some of them to avoid infinite loop
         )
+        self.global_trace_path = global_trace
+
+        # Seed trace from global trace library
+        if global_trace is not None:
+            count = seed_trace_from_global(self.trace, global_trace)
+            if count > 0:
+                logger.info(
+                    f"Seeded trace with {count} historical experiments from global trace: {global_trace}",
+                )
 
     async def direct_exp_gen(self, prev_out: dict[str, Any]):
         while True:
@@ -139,22 +148,38 @@ class FactorReportLoop(FactorRDLoop, metaclass=LoopMeta):
         logger.log_object(exp.sub_workspace_list, tag="coder result")
         return exp
 
+    def record(self, prev_out: dict[str, Any]):
+        super().record(prev_out)
+        # Append successful experiments to global trace library
+        if self.global_trace_path is not None:
+            feedback = prev_out.get("feedback")
+            exp = prev_out.get("running") or prev_out.get("coding") or prev_out.get("direct_exp_gen", {}).get("exp_gen")
+            if feedback is not None and feedback.decision and exp is not None:
+                append_to_global_trace(self.global_trace_path, exp, feedback)
+                logger.info(
+                    f"Appended successful experiment to global trace: {self.global_trace_path}",
+                )
 
-def main(report_folder=None, path=None, all_duration=None, checkout=True):
+
+def main(report_folder=None, path=None, all_duration=None, checkout=True, global_trace=None):
     """
     Auto R&D Evolving loop for fintech factors (the factors are extracted from finance reports).
 
     Args:
         report_folder (str, optional): The folder contains the report PDF files. Reports will be loaded from this folder.
         path (str, optional): The path for loading a session. If provided, the session will be loaded.
-        step_n (int, optional): Step number to continue running a session.
+        all_duration (str, optional): The duration for running the loop.
+        checkout (bool, optional): Whether to checkout the session.
+        global_trace (str, optional): Path to a global trace file. Successful experiments are accumulated
+            across batches into this file. At startup, the trace is seeded with historical entries.
     """
     if path is None and report_folder is None:
-        model_loop = FactorReportLoop()
+        model_loop = FactorReportLoop(global_trace=global_trace)
     elif path is not None:
         model_loop = FactorReportLoop.load(path, checkout=checkout)
+        model_loop.global_trace_path = global_trace
     else:
-        model_loop = FactorReportLoop(report_folder=report_folder)
+        model_loop = FactorReportLoop(report_folder=report_folder, global_trace=global_trace)
 
     asyncio.run(model_loop.run(all_duration=all_duration))
 

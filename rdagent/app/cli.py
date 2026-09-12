@@ -6,7 +6,6 @@ This will
 - autoamtically load dotenv
 """
 
-import sys
 
 from dotenv import load_dotenv
 
@@ -16,11 +15,9 @@ load_dotenv(".env")
 
 import subprocess
 from importlib.resources import path as rpath
-from typing import Optional
+from typing import Annotated
 
 import typer
-from typing_extensions import Annotated
-
 from rdagent.app.data_science.loop import main as data_science
 from rdagent.app.finetune.llm.loop import main as llm_finetune
 from rdagent.app.general_model.general_model import (
@@ -81,21 +78,22 @@ def ds_user_interact(port=19900):
 
 @app.command(name="fin_factor")
 def fin_factor_cli(
-    path: Optional[str] = None,
-    step_n: Optional[int] = None,
-    loop_n: Optional[int] = None,
-    all_duration: Optional[str] = None,
+    path: str | None = None,
+    step_n: int | None = None,
+    loop_n: int | None = None,
+    all_duration: str | None = None,
     checkout: CheckoutOption = True,
+    global_trace: str | None = None,
 ):
-    fin_factor(path=path, step_n=step_n, loop_n=loop_n, all_duration=all_duration, checkout=checkout)
+    fin_factor(path=path, step_n=step_n, loop_n=loop_n, all_duration=all_duration, checkout=checkout, global_trace=global_trace)
 
 
 @app.command(name="fin_model")
 def fin_model_cli(
-    path: Optional[str] = None,
-    step_n: Optional[int] = None,
-    loop_n: Optional[int] = None,
-    all_duration: Optional[str] = None,
+    path: str | None = None,
+    step_n: int | None = None,
+    loop_n: int | None = None,
+    all_duration: str | None = None,
     checkout: CheckoutOption = True,
 ):
     fin_model(path=path, step_n=step_n, loop_n=loop_n, all_duration=all_duration, checkout=checkout)
@@ -103,10 +101,10 @@ def fin_model_cli(
 
 @app.command(name="fin_quant")
 def fin_quant_cli(
-    path: Optional[str] = None,
-    step_n: Optional[int] = None,
-    loop_n: Optional[int] = None,
-    all_duration: Optional[str] = None,
+    path: str | None = None,
+    step_n: int | None = None,
+    loop_n: int | None = None,
+    all_duration: str | None = None,
     checkout: CheckoutOption = True,
 ):
     fin_quant(path=path, step_n=step_n, loop_n=loop_n, all_duration=all_duration, checkout=checkout)
@@ -114,12 +112,13 @@ def fin_quant_cli(
 
 @app.command(name="fin_factor_report")
 def fin_factor_report_cli(
-    report_folder: Optional[str] = None,
-    path: Optional[str] = None,
-    all_duration: Optional[str] = None,
+    report_folder: str | None = None,
+    path: str | None = None,
+    all_duration: str | None = None,
     checkout: CheckoutOption = True,
+    global_trace: str | None = None,
 ):
-    fin_factor_report(report_folder=report_folder, path=path, all_duration=all_duration, checkout=checkout)
+    fin_factor_report(report_folder=report_folder, path=path, all_duration=all_duration, checkout=checkout, global_trace=global_trace)
 
 
 @app.command(name="general_model")
@@ -129,12 +128,12 @@ def general_model_cli(report_file_path: str):
 
 @app.command(name="data_science")
 def data_science_cli(
-    path: Optional[str] = None,
+    path: str | None = None,
     checkout: CheckoutOption = True,
-    step_n: Optional[int] = None,
-    loop_n: Optional[int] = None,
-    timeout: Optional[str] = None,
-    competition: Optional[str] = None,
+    step_n: int | None = None,
+    loop_n: int | None = None,
+    timeout: str | None = None,
+    competition: str | None = None,
 ):
     data_science(
         path=path,
@@ -148,16 +147,16 @@ def data_science_cli(
 
 @app.command(name="llm_finetune")
 def llm_finetune_cli(
-    path: Optional[str] = None,
+    path: str | None = None,
     checkout: CheckoutOption = True,
-    benchmark: Optional[str] = None,
-    benchmark_description: Optional[str] = None,
-    dataset: Optional[str] = None,
-    base_model: Optional[str] = None,
-    upper_data_size_limit: Optional[int] = None,
-    step_n: Optional[int] = None,
-    loop_n: Optional[int] = None,
-    timeout: Optional[str] = None,
+    benchmark: str | None = None,
+    benchmark_description: str | None = None,
+    dataset: str | None = None,
+    base_model: str | None = None,
+    upper_data_size_limit: int | None = None,
+    step_n: int | None = None,
+    loop_n: int | None = None,
+    timeout: str | None = None,
 ):
     llm_finetune(
         path=path,
