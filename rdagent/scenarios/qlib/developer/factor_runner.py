@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from pandarallel import pandarallel
 
@@ -35,12 +36,33 @@ class QlibFactorRunner(CachedRunner[QlibFactorExperiment]):
     def calculate_information_coefficient(
         self, concat_feature: pd.DataFrame, SOTA_feature_column_size: int, new_feature_columns_size: int
     ) -> pd.DataFrame:
-        res = pd.Series(index=range(SOTA_feature_column_size * new_feature_columns_size))
-        for col1 in range(SOTA_feature_column_size):
-            for col2 in range(SOTA_feature_column_size, SOTA_feature_column_size + new_feature_columns_size):
-                res.loc[col1 * new_feature_columns_size + col2 - SOTA_feature_column_size] = concat_feature.iloc[
-                    :, col1
-                ].corr(concat_feature.iloc[:, col2])
+        n_sota = SOTA_feature_column_size
+        n_new = new_feature_columns_size
+
+        has_nan = concat_feature.isna().any().any()
+
+        if not has_nan:
+            # 无缺失，BLAS矩阵加速
+            sota_arr = concat_feature.iloc[:, :n_sota].T.values
+            new_arr = concat_feature.iloc[:, n_sota: n_sota + n_new].T.values
+
+            sota_centered = sota_arr - sota_arr.mean(axis=1, keepdims=True)
+            new_centered = new_arr - new_arr.mean(axis=1, keepdims=True)
+
+            cov = (sota_centered @ new_centered.T) / (sota_arr.shape[1] - 1)
+            std_sota = sota_centered.std(axis=1, ddof=1)
+            std_new = new_centered.std(axis=1, ddof=1)
+            corr_mat = cov / np.outer(std_sota, std_new)
+
+            res = pd.DataFrame(corr_mat).stack(future_stack=True).reset_index(drop=True)
+        else:
+            # 存在NaN，corrwith pairwise，和原始逐列corr完全同口径
+            sota_df = concat_feature.iloc[:, :n_sota]
+            new_df = concat_feature.iloc[:, n_sota: n_sota + n_new]
+            cross_corr = new_df.apply(lambda ser: sota_df.corrwith(ser))
+            res = cross_corr.stack(future_stack=True).reset_index(drop=True)
+
+        res.index = range(n_sota * n_new)
         return res
 
     def deduplicate_new_factors(self, SOTA_feature: pd.DataFrame, new_feature: pd.DataFrame) -> pd.DataFrame:
